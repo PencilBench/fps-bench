@@ -1,0 +1,62 @@
+{
+ "format": "trace",
+ "schema_version": 2,
+ "name": "Bloodborne",
+ "created": "2026-11-14T11:23:01Z",
+ "origin_platform": "macos",
+ "metadata": {
+  "recorded_from": "fpsbench record",
+  "fps_mode": "metalperftrace",
+  "process_name": "bbgpu-host-macos27",
+  "trimmed_lead_ms": 244.311625
+ },
+ "events": [
+  {
+   "t_ms": 0.0,
+   "kind": "key",
+   "key": "alt",
+   "down": false,
+   "native": {
+    "vk": 58
+   },
+   "mods": [
+    "ctrl"
+   ]
+  },
+  {
+   "t_ms": 63.808,
+   "kind": "key",
+   "key": "ctrl",
+   "down": false,
+   "native": {
+    "vk": 59
+   },
+   "mods": []
+  },
+  {
+   "t_ms": 12129.969,
+   "kind": "key",
+   "key": "ctrl",
+   "down": true,
+   "native": {
+    "vk": 59
+   },
+   "mods": [
+    "ctrl"
+   ]
+  },
+  {
+   "t_ms": 12180.087,
+   "kind": "key",
+   "key": "alt",
+   "down": true,
+   "native": {
+    "vk": 58
+   },
+   "mods": [
+    "alt",
+    "ctrl"
+   ]
+  }
+ ]
+}

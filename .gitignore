@@ -1,0 +1,22 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+build/
+dist/
+
+# fpsbench output
+reports/
+*.report.json
+*.samples.csv
+
+# macOS
+.DS_Store
+
+# built CoreHID helper (source + entitlements are tracked)
+helper/fpsbench-gamepad-helper
+helper/embedded.provisionprofile
+
+# pytest artifacts
+.pytest_cache/

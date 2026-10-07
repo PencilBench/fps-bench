@@ -1,0 +1,31 @@
+{
+  "format": "route",
+  "schema_version": 1,
+  "name": "example - Liurnia ride",
+  "created": null,
+  "origin_platform": "macos",
+  "warmup_ms": 8000,
+  "settle_ms": 3000,
+  "repeat": 3,
+  "fps": {
+    "mode": "auto",
+    "region": null,
+    "sample_hz": 6.0,
+    "min_fps": 0.5,
+    "max_fps": 2000.0,
+    "presentmon_path": null,
+    "process_name": null
+  },
+  "metadata": {
+    "note": "hand written example: replace the region with `fpsbench pick-region`"
+  },
+  "steps": [
+    {"type": "label", "text": "start"},
+    {"type": "key", "keys": ["w"], "hold_ms": 4000, "label": "straight"},
+    {"type": "turn", "dx": 600, "dy": 0, "duration_ms": 300, "keys": ["w"], "label": "pan"},
+    {"type": "key", "keys": ["w", "shift"], "hold_ms": 3000, "label": "sprint"},
+    {"type": "wait", "ms": 500},
+    {"type": "turn", "dx": -200, "dy": 40, "duration_ms": 200, "keys": ["w"], "label": "recenter"},
+    {"type": "key", "keys": ["w"], "hold_ms": 2000}
+  ]
+}

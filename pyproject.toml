@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "fpsbench"
+version = "0.1.0"
+description = "External black-box \"walk-the-map\" benchmark tool for single-player games (macOS + Windows 11)"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+dependencies = []
+
+[project.optional-dependencies]
+# macOS: pyobjc 11.x needs Python >= 3.10, pyobjc 10.3.x is the last line that supports 3.9.
+macos = [
+  "pyobjc-framework-Cocoa>=11; python_version >= '3.10'",
+  "pyobjc-framework-Quartz>=11; python_version >= '3.10'",
+  "pyobjc-framework-Vision>=11; python_version >= '3.10'",
+  "pyobjc-framework-ScreenCaptureKit>=11; python_version >= '3.10'",
+  "pyobjc-framework-ApplicationServices>=11; python_version >= '3.10'",
+  "pyobjc-framework-Cocoa>=10.3,<11; python_version < '3.10'",
+  "pyobjc-framework-Quartz>=10.3,<11; python_version < '3.10'",
+  "pyobjc-framework-Vision>=10.3,<11; python_version < '3.10'",
+  "pyobjc-framework-ScreenCaptureKit>=10.3,<11; python_version < '3.10'",
+  "pyobjc-framework-ApplicationServices>=10.3,<11; python_version < '3.10'",
+]
+# Windows: winsdk only supplies the Windows.Media.Ocr bridge (OCR fallback path).
+# Input injection and Raw Input recording use stdlib ctypes only.
+windows = [
+  "winsdk>=1.0.0b10; sys_platform == 'win32' and python_version < '3.13'",
+]
+dev = ["pytest>=7"]
+# gamepad: SDL2 (pygame) reads a real controller on both platforms.  Injection is
+# platform specific - vgamepad + ViGEmBus on Windows, a signed CoreHID helper on
+# macOS - and is never installed automatically.
+gamepad = ["pygame>=2.1"]
+
+[project.scripts]
+fpsbench = "fpsbench.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["fpsbench*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["error::DeprecationWarning:fpsbench.*"]

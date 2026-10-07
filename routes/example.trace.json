@@ -1,0 +1,29 @@
+{
+  "format": "trace",
+  "schema_version": 1,
+  "name": "example - Liurnia ride",
+  "created": "2026-10-06T20:30:00Z",
+  "origin_platform": "macos",
+  "metadata": {
+    "display_hz": 120,
+    "screen": "1728x1117@2x",
+    "note": "hand written excerpt of a recording; a real trace has thousands of look events"
+  },
+  "events": [
+    {"t_ms": 0, "kind": "key", "key": "w", "down": true, "native": {"vk": 13}, "mods": []},
+    {"t_ms": 120, "kind": "look", "dx": 34, "dy": -2},
+    {"t_ms": 137, "kind": "look", "dx": 41, "dy": -1},
+    {"t_ms": 154, "kind": "look", "dx": 38, "dy": 0},
+    {"t_ms": 171, "kind": "look", "dx": 44, "dy": 1},
+    {"t_ms": 188, "kind": "look", "dx": 39, "dy": 0},
+    {"t_ms": 500, "kind": "label", "text": "straight"},
+    {"t_ms": 2400, "kind": "key", "key": "shift", "down": true, "native": {"vk": 56}, "mods": ["shift"]},
+    {"t_ms": 2400, "kind": "label", "text": "sprint"},
+    {"t_ms": 5400, "kind": "key", "key": "shift", "down": false, "native": {"vk": 56}, "mods": []},
+    {"t_ms": 5900, "kind": "look", "dx": -22, "dy": 6},
+    {"t_ms": 5917, "kind": "look", "dx": -18, "dy": 4},
+    {"t_ms": 7800, "kind": "scroll", "dy": 1},
+    {"t_ms": 9200, "kind": "key", "key": "w", "down": false, "native": {"vk": 13}, "mods": []},
+    {"t_ms": 9600, "kind": "label", "text": "done"}
+  ]
+}
