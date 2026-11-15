@@ -187,7 +187,7 @@ class WindowsRecorderBackend(RecorderBackend):
         return self._finish.is_set()
 
     def arm(self) -> None:
-        """Begin capturing without the start hotkey (``measure`` starts on input).
+        """Begin capturing without the start hotkey (the first press does this).
 
         The hotkey then only stops the capture.  The clock is re-anchored here for
         the same reason the starting press re-anchors it: what happened while the

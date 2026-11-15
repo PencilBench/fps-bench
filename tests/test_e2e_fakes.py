@@ -1233,26 +1233,37 @@ def test_a_mixed_trace_drives_both_input_paths(wired, tmp_path):
 # measure
 # --------------------------------------------------------------------------- #
 class _InputThenHotkeyRecorder(fakes.FakeRecorderBackend):
-    """Arms on demand, emits scripted input after N polls, then honours the stop hotkey.
+    """Starts on the hotkey, emits scripted input, then honours the stop hotkey.
 
-    ``schedule`` is a list of ``(poll_index, events)``: the events are delivered
-    on that poll, which is how a test makes input arrive before or after the
-    settle period.
+    ``recording()`` turns True once ``recording_after_polls`` polls have happened
+    (the stand-in for the start hotkey); ``schedule`` is a list of
+    ``(poll_index, events)`` delivered on that poll; ``stop_requested()`` turns
+    True after ``stop_after_polls`` checks, which is the stop hotkey.
     """
 
     records_immediately = False
     finish_hotkey = "ctrl+alt+enter"
 
-    def __init__(self, schedule=(), *, stop_after_polls: int = 25) -> None:
+    def __init__(
+        self,
+        schedule=(),
+        *,
+        stop_after_polls: int = 25,
+        recording_after_polls: int = 1,
+    ) -> None:
         super().__init__([])
         self._schedule = [(int(after), list(events)) for after, events in schedule]
         self._stop_after = stop_after_polls
+        self._recording_after = recording_after_polls
         self._polls = 0
         self._stop_checks = 0
         self.arm_called = False
 
     def arm(self) -> None:
         self.arm_called = True
+
+    def recording(self) -> bool:
+        return self._polls >= self._recording_after
 
     def poll(self):
         self._polls += 1
@@ -1268,10 +1279,8 @@ class _InputThenHotkeyRecorder(fakes.FakeRecorderBackend):
         return self._stop_checks >= self._stop_after
 
 
-def test_measure_starts_on_the_first_input_and_stops_on_the_hotkey(wired, tmp_path, capsys):
-    recorder = _InputThenHotkeyRecorder(
-        [(1, [TraceEvent(kind="key", t_ms=10, key="w", down=True)])]
-    )
+def test_measure_starts_on_the_hotkey_and_stops_on_the_next_press(wired, tmp_path, capsys):
+    recorder = _InputThenHotkeyRecorder(stop_after_polls=15)
     wired["recorder"] = recorder
     wired["fps"] = fakes.FakePresentMonFpsBackend(frames=400, dt_ns=2 * MS, interval_s=0.002)
     json_out = tmp_path / "measure.json"
@@ -1293,10 +1302,11 @@ def test_measure_starts_on_the_first_input_and_stops_on_the_hotkey(wired, tmp_pa
         ]
     )
     assert code == 0
-    assert recorder.arm_called is True
+    assert recorder.arm_called is False  # the hotkey starts it, nothing is armed
     output = capsys.readouterr().out
-    assert "ready: measuring starts on the first input (keyboard, mouse or controller)" in output
-    assert "measuring - press ctrl+alt+enter to stop" in output
+    assert "ready: press ctrl+alt+enter (with the game focused) to start measuring" in output
+    assert "measuring started" in output
+    assert "measuring - press ctrl+alt+enter again to stop" in output
     assert "average" in output and "1% low" in output
 
     payload = json.loads(json_out.read_text())
@@ -1312,15 +1322,9 @@ def test_measure_starts_on_the_first_input_and_stops_on_the_hotkey(wired, tmp_pa
     assert recorder.stopped is True
 
 
-def test_measure_settles_before_watching_for_input(wired, tmp_path, capsys):
-    """Input that happens during the settle window must not open the window."""
-    recorder = _InputThenHotkeyRecorder(
-        [
-            (1, [TraceEvent(kind="look", t_ms=5, dx=3, dy=0)]),  # settles away
-            (15, [TraceEvent(kind="look", t_ms=900, dx=4, dy=0)]),  # the real first input
-        ],
-        stop_after_polls=60,
-    )
+def test_measure_settles_before_watching_for_the_hotkey(wired, tmp_path, capsys):
+    """The start hotkey is only watched after the settle period."""
+    recorder = _InputThenHotkeyRecorder([], stop_after_polls=60)
     wired["recorder"] = recorder
     wired["fps"] = fakes.FakePresentMonFpsBackend(frames=400, dt_ns=2 * MS, interval_s=0.002)
     json_out = tmp_path / "measure.json"
@@ -1341,21 +1345,17 @@ def test_measure_settles_before_watching_for_input(wired, tmp_path, capsys):
     assert code == 0
     output = capsys.readouterr().out
     assert "settling for 0.2 s" in output
+    assert output.index("settling for 0.2 s") < output.index("ready: press")
     assert json.loads(json_out.read_text())["samples"] > 0
 
 
-def test_measure_starts_on_controller_input(wired, tmp_path, capsys):
-    from fpsbench.core.gamepad import GamepadState
-
-    wired["recorder"] = _InputThenHotkeyRecorder([], stop_after_polls=40)
+def test_measure_does_not_read_the_controller(wired, tmp_path, capsys):
+    """The window starts on the hotkey, so no controller (or pygame) is needed."""
+    wired["recorder"] = _InputThenHotkeyRecorder([], stop_after_polls=15)
     wired["gamepad_recorder"] = fakes.FakeGamepadRecorder(
-        [
-            [(0.0, GamepadState())],  # the initial state snapshot is not input
-            [(40.0, GamepadState(lx=0.5))],  # this is
-        ]
+        [[(0.0, GamepadState(lx=0.5))]]
     )
     wired["fps"] = fakes.FakePresentMonFpsBackend(frames=400, dt_ns=2 * MS, interval_s=0.002)
-    json_out = tmp_path / "measure.json"
 
     code = cli.main(
         [
@@ -1366,18 +1366,15 @@ def test_measure_starts_on_controller_input(wired, tmp_path, capsys):
             "Game.exe",
             "--settle-seconds",
             "0",
-            "--json",
-            str(json_out),
         ]
     )
     assert code == 0
-    assert wired["gamepad_recorder"].started is True
-    assert wired["gamepad_recorder"].stopped is True
-    assert json.loads(json_out.read_text())["samples"] > 0
+    assert wired["gamepad_recorder"].started is False
+    assert "controller" not in capsys.readouterr().out
 
 
-def test_measure_reports_a_window_that_was_never_opened(wired, capsys):
-    wired["recorder"] = _InputThenHotkeyRecorder([], stop_after_polls=10**9)
+def test_measure_reports_a_window_that_was_never_started(wired, capsys):
+    wired["recorder"] = _InputThenHotkeyRecorder([], recording_after_polls=10**9)
     wired["fps"] = fakes.FakePresentMonFpsBackend(frames=50, dt_ns=5 * MS, interval_s=0.002)
     code = cli.main(
         [
@@ -1394,18 +1391,83 @@ def test_measure_reports_a_window_that_was_never_opened(wired, capsys):
     )
     assert code == 1
     error = capsys.readouterr().err
-    assert "no input was seen before the timeout" in error
-    assert "touch the controls" in error
+    assert "was not started before the timeout" in error
+    assert "ctrl+alt+enter" in error
 
 
-def test_measure_reports_a_stop_before_any_input(wired, capsys):
-    wired["recorder"] = _InputThenHotkeyRecorder([], stop_after_polls=3)
+def test_measure_timeout_covers_the_settle_period(wired, capsys):
+    """``--timeout`` bounds the whole command, the settle included."""
+    wired["recorder"] = _InputThenHotkeyRecorder([], stop_after_polls=10**9)
+    wired["fps"] = fakes.FakePresentMonFpsBackend(frames=50, dt_ns=5 * MS, interval_s=0.002)
+    began = time.monotonic()
+    code = cli.main(
+        [
+            "measure",
+            "--fps",
+            "presentmon",
+            "--process-name",
+            "x",
+            "--settle-seconds",
+            "2",
+            "--timeout",
+            "0.2",
+        ]
+    )
+    elapsed = time.monotonic() - began
+    assert code == 1
+    error = capsys.readouterr().err
+    assert "ran out during the settle period" in error
+    assert elapsed < 1.5
+
+
+def test_measure_countdown_closes_the_window_and_reports(wired, tmp_path, capsys):
+    """``--countdown S`` ends the window S seconds after the start hotkey."""
+    wired["recorder"] = _InputThenHotkeyRecorder([], stop_after_polls=10**9)
+    wired["fps"] = fakes.FakePresentMonFpsBackend(frames=400, dt_ns=2 * MS, interval_s=0.002)
+    json_out = tmp_path / "countdown.json"
+    began = time.monotonic()
+    code = cli.main(
+        [
+            "measure",
+            "--fps",
+            "presentmon",
+            "--process-name",
+            "x",
+            "--settle-seconds",
+            "0",
+            "--countdown",
+            "0.3",
+            "--json",
+            str(json_out),
+        ]
+    )
+    elapsed = time.monotonic() - began
+    assert code == 0
+    assert elapsed >= 0.25
+    payload = json.loads(json_out.read_text())
+    assert payload["countdown_s"] == 0.3
+    assert 0.25 <= payload["duration_s"] <= 0.7
+    assert payload["samples"] > 0
+    assert "countdown" in capsys.readouterr().out
+
+
+def test_measure_rejects_a_non_positive_countdown(wired, capsys):
+    code = cli.main(
+        ["measure", "--fps", "presentmon", "--process-name", "x", "--countdown", "0"]
+    )
+    assert code == 1
+    assert "--countdown" in capsys.readouterr().err
+
+
+def test_measure_reports_an_immediate_stop(wired, capsys):
+    wired["recorder"] = _InputThenHotkeyRecorder([], stop_after_polls=0)
     wired["fps"] = fakes.FakePresentMonFpsBackend(frames=50, dt_ns=5 * MS, interval_s=0.002)
     code = cli.main(
         ["measure", "--fps", "presentmon", "--process-name", "x", "--settle-seconds", "0"]
     )
     assert code == 1
-    assert "stopped before any input was seen" in capsys.readouterr().err
+    error = capsys.readouterr().err
+    assert "no FPS samples inside the measured window" in error
 
 
 def test_measure_needs_a_region_for_ocr(wired, capsys, tmp_path, monkeypatch):

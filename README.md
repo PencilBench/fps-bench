@@ -140,18 +140,18 @@ scripts/bench.sh bench routes/liurnia.trace.json --simplify routes/liurnia.json 
 | command | purpose |
 |---|---|
 | `doctor [--region x,y,w,h] [--window SUBSTR] [--list-windows] [--json FILE]` | permissions, dependencies, displays, metalperftrace/PresentMon, FPS region trial read, gamepad reading/injection capability; `--list-windows` prints the window titles `--window` matches against (on macOS: current Space only, needs Screen Recording) |
-| `record --out FILE [--name N] [--window SUBSTR] [--trim-lead-in] [--max-duration S] [--gamepad [--gamepad-device SUBSTR] [--gamepad-poll-hz H]] [--region x,y,w,h] [--fps ...] [--process-name NAME]` | record a play-through into a trace (hotkeys below); `--gamepad` also records controller state into a schema-2 trace |
-| `bench PATH [--pacing frames\|time] [--look-split chunk\|raw] [--input-hz H] [--frame-period-ms MS] [--repeat N] [--warmup-ms MS] [--settle-ms MS] [--look-scale F] [--fps auto\|presentmon\|metalperftrace\|ocr] [--presentmon PATH] [--process-name NAME] [--region x,y,w,h] [--window SUBSTR] [--post-to-pid PID] [--timeout S] [--simplify FILE] [--simplify-only] [--json FILE] [--csv FILE] [--no-color]` | replay and report; `PATH` may be a trace or a route (`--post-to-pid` posts events to that pid on macOS, and activates its window on Windows); waits for the start hotkey. `--pacing frames` (default) replays one quantised sample per estimated rendered frame, `--pacing time` replays the recorded timeline as-is and is the reference for trajectory comparison (`--look-split raw` keeps the recorded look timing; see [Frame-paced replay](#frame-paced-replay-frame-rate-independent-input)) |
-| `measure [--settle-seconds S] [--no-gamepad] [--fps auto\|presentmon\|metalperftrace\|ocr] [--process-name NAME] [--region x,y,w,h] [--timeout S] [--json FILE] [--csv FILE]` (alias `fps`) | settle, then measure FPS from the **first keyboard/mouse/controller input** until `ctrl+alt+enter` — no route, no replay, no input injection; reports **average** and **1% low** (plus 0.1% low, median, min/max); see [Measuring FPS without a route](#measuring-fps-without-a-route) |
+| `record --out FILE [--name N] [--window SUBSTR] [--trim-lead-in] [--max-duration S] [--gamepad [--gamepad-device SUBSTR] [--gamepad-poll-hz H]] [--region x,y,w,h] [--fps ...] [--process-name NAME] [--process-id PID]` | record a play-through into a trace (hotkeys below); `--gamepad` also records controller state into a schema-2 trace |
+| `bench PATH [--pacing frames\|time] [--look-split chunk\|raw] [--input-hz H] [--frame-period-ms MS] [--repeat N] [--warmup-ms MS] [--settle-ms MS] [--look-scale F] [--fps auto\|presentmon\|metalperftrace\|ocr] [--presentmon PATH] [--process-name NAME] [--process-id PID] [--region x,y,w,h] [--window SUBSTR] [--post-to-pid PID] [--timeout S] [--simplify FILE] [--simplify-only] [--json FILE] [--csv FILE] [--no-color]` | replay and report; `PATH` may be a trace or a route (`--post-to-pid` posts events to that pid on macOS, and activates its window on Windows); waits for the start hotkey. `--pacing frames` (default) replays one quantised sample per estimated rendered frame, `--pacing time` replays the recorded timeline as-is and is the reference for trajectory comparison (`--look-split raw` keeps the recorded look timing; see [Frame-paced replay](#frame-paced-replay-frame-rate-independent-input)) |
+| `measure [--settle-seconds S] [--countdown S] [--no-gamepad] [--fps auto\|presentmon\|metalperftrace\|ocr] [--process-name NAME] [--process-id PID] [--region x,y,w,h] [--timeout S] [--json FILE] [--csv FILE]` (alias `fps`) | settle, then measure FPS from `ctrl+alt+enter` until the next press (or `--countdown S` seconds after it started) — no route, no replay, no input injection; reports **average** and **1% low** (plus 0.1% low, median, min/max); see [Measuring FPS without a route](#measuring-fps-without-a-route) |
 | `probe-gamepad [--device SUBSTR] [--seconds S] [--poll-hz H] [--pulse]` | report controller **reading** and virtual-device **injection** separately; `--seconds` streams recorded state changes, `--pulse` sends a short test pattern to the virtual pad |
 | `pick-region [--region x,y,w,h] [--manual] [--route FILE] [--fps ...] [--no-config]` | select the FPS counter region and store it |
-| `dry-run [--seconds S] [--fps ...] [--region x,y,w,h] [--window SUBSTR]` | exercise the capture chain without injecting any input |
+| `dry-run [--seconds S] [--fps ...] [--region x,y,w,h] [--window SUBSTR] [--process-name NAME] [--process-id PID]` | exercise the capture chain without injecting any input |
 
 Hotkeys (same on macOS and Windows): **`ctrl+alt+enter` is the start gesture** —
 for `bench` it begins the benchmark, for `record` it starts the capture and a
-second press stops it, and for `measure` it only **stops** (measuring starts on
-the first input; Ctrl-C also stops and still reports); **`ctrl+alt+1..9` drops a
-segment label**.
+second press stops it, and for `measure` it starts the measurement window and the
+next press closes it (Ctrl-C also stops and still reports); **`ctrl+alt+1..9`
+drops a segment label**.
 
 Both commands come up waiting for that press, which is how you get the game into
 position first: nothing played before it is measured, and nothing played before it
@@ -271,10 +271,21 @@ See [routes/example.json](routes/example.json) and
   an occluded, minimised or other-Space window presents nothing and cannot be
   measured — fpsbench says so instead of blaming `--process-name`.
 * **`--fps presentmon`** — Windows only. True per-frame present intervals from
-  ETW. Requires `--process-name`; PresentMon must be on `PATH`, next to a known
-  install location, or given with `--presentmon <path>`. Production arguments are
-  probed in both `--flag` and `-flag` spellings (1.x vs 2.x); failures list every
-  command that was tried.
+  ETW. Requires `--process-name`, or `--process-id <pid>` when the executable name
+  is ambiguous (several processes of the same game, a launcher, a name PresentMon
+  did not match); a pid wins when both are given, and the report's notes say so.
+  The pid changes every launch, so pass it per run — it is never stored in a trace
+  or a route. PresentMon must be on `PATH`, next to a known install location, or
+  given with `--presentmon <path>`. Production arguments are probed in both
+  `--flag` and `-flag` spellings (1.x vs 2.x); failures list every command that
+  was tried. fpsbench runs PresentMon in its own ETW session (`fpsbench`), so an
+  FPS overlay that holds the default `PresentMon` session — Intel Graphics
+  Software does — no longer blocks the capture. PresentMon 2.x keeps its CSV open
+  for the whole capture, so fpsbench stops it with `CTRL_BREAK` when the run ends
+  and reads the frames then: the report is identical, but frame-paced replay has
+  no live intervals and falls back to the `--input-hz` cadence (the notes say so).
+  If PresentMon reports `ETW events were lost`, another tracer is saturating the
+  system (an overlay, vendor telemetry, a leftover capture) — close it or reboot.
 * **`--fps ocr`** — reads the counter through OCR at `fps.sample_hz` (default
   6 Hz). Needs `--region`/`pick-region`. Polls that do not parse, are out of the
   plausible range, or are an unconfirmed jump (an isolated spike that the next
@@ -317,14 +328,18 @@ scripts/bench.sh measure --fps presentmon --process-name Game.exe
 
 # overlay counter instead (needs a configured region)
 scripts/bench.sh measure --fps ocr --region 20,20,140,40
+
+# no hotkey needed to stop: measure exactly 20 s after the start press
+scripts/bench.sh measure --fps presentmon --process-name Game.exe --countdown 20
 ```
 
 1. Start it — it settles for `--settle-seconds` (default 3 s) without counting
    anything; use that time to get to the scene you want to measure.
-2. The window opens **automatically on the first input** — a key, a mouse move
-   or click, or a controller change. Nothing to press, so the measurement starts
-   on the input that actually begins the action.
-3. Press **`ctrl+alt+enter`** to close the window; the numbers are printed.
+2. Press **`ctrl+alt+enter`** (with the game focused) to open the measurement
+   window. The start is an explicit gesture, exactly like `bench`/`record`, so
+   nothing you do while getting into position is measured.
+3. Press **`ctrl+alt+enter`** again to close the window and print the numbers.
+   With `--countdown S` the window closes by itself `S` seconds after it opened.
 
 ```
 FPS source: metalperftrace (Metal frame intervals, 1 s statistics)
@@ -346,14 +361,20 @@ measured.
 
 Notes:
 
-* Input during the settle period is ignored, so moving the mouse to focus the
-  game before the countdown ends cannot open the window early. After it ends,
-  *any* input opens it — put the mouse down once you are in position.
-* Controller input is monitored automatically (the reader ignores the initial
-  state snapshot, so a resting pad does not start the window); `--no-gamepad`
-  leaves it out, and a missing controller is only a note, never an error.
-* `--timeout S` caps the whole command (settle and waiting for the first input
+* Nothing is measured before the start press, and input during the settle period
+  is ignored, so getting the game into position cannot open the window early.
+* `measure` reads no controller: the window starts on `ctrl+alt+enter`, so no
+  `pygame`/SDL2 and no gamepad is involved. `--no-gamepad` is accepted and
+  ignored (kept for older scripts).
+* `--timeout S` caps the whole command (settle and waiting for the start hotkey
   included), so a scripted run can never hang.
+* `--countdown S` closes the window **by itself** `S` seconds after it opened
+  (i.e. counting from the start press, not from the settle end), then reports the
+  numbers — no stop hotkey needed:
+  `scripts/bench.sh measure --fps presentmon --process-name Game.exe --countdown 20`.
+  Handy for scripted comparisons: settle `3 s`, press the start hotkey, and the
+  run ends exactly `S` seconds later. Ctrl-C still stops early, and the JSON
+  export records `countdown_s`.
 
 ### Playback precision
 
@@ -679,7 +700,8 @@ comparison is always auditable.
 | `CGEventTapCreate returned NULL` | Accessibility (or Input Monitoring) missing | grant it, restart the app |
 | OCR reads nothing / "no usable FPS value" | counter not visible in the region, or HUD off | turn the counter on, re-run `pick-region` while it is visible |
 | FPS is suspiciously capped at the refresh rate | you are looking at a frame counter, not an FPS counter | use the FPS readout (Steam overlay, RTSS) |
-| PresentMon never appears | wrong `--process-name`, or an unsupported argument style | `doctor` shows what was tried; pass the exact process name (e.g. `eldenring.exe`) |
+| PresentMon never appears | wrong `--process-name`, or an unsupported argument style | `doctor` shows what was tried; pass the exact process name (e.g. `eldenring.exe`), or the running instance's `--process-id <pid>` |
+| `PresentMon produced no frames` / `warning: N ETW events were lost` | the target is not presenting (hidden, minimised, loading, paused) **or** another tracer is saturating ETW — an FPS overlay, Intel Graphics Software's telemetry, a leftover capture | bring the game on screen and into gameplay; if PresentMon itself reports lost events, close the overlay/telemetry tool (or reboot) and retry |
 | Playback does nothing in game | UIPI (Windows) / Secure Input (macOS) / game ignores synthetic input | run as administrator, switch away from Secure Input, or try `--post-to-pid` |
 | Replay turns a different amount than the recording | the game reads raw device counts (or its own raw-input mode) or smooths the camera per frame | injected deltas are exact, so fix the *game's* side: raw input off, mouse smoothing off, sensitivity unchanged, bench the trace rather than a simplified route, and re-record if you changed the pointer settings — see [Mouse-look fidelity](#mouse-look-fidelity); for a constant factor use `bench --look-scale F` |
 | The replay's path drifts (turn no longer lines up with movement) | `--pacing frames` estimates the frame pace instead of syncing to the game, or large deltas were chunked after their recorded time | compare on the recorded timeline: `bench TRACE --pacing time --look-split raw --repeat 1` (the report's `look timing` shows which strategy ran) — see [Mouse-look fidelity](#mouse-look-fidelity) |

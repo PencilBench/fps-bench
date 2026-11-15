@@ -160,12 +160,12 @@ class RecorderBackend:
         return self.records_immediately
 
     def arm(self) -> None:
-        """Start capturing **without** the start hotkey (used by ``measure``).
+        """Start capturing **without** the start hotkey.
 
-        ``record`` starts and stops on the hotkey; ``measure`` instead starts on
-        the first keyboard/mouse/gamepad input and only uses the hotkey to stop,
-        so it has to arm the tap up front.  Recorders that cannot do that raise
-        ``NotImplementedError`` - the caller then has no automatic start.
+        This is what a recorder's own hotkey handler does on its first press; every
+        command (`record`, `bench`, `measure`) now uses that explicit start gesture,
+        so nothing arms the tap up front.  Recorders that cannot do it raise
+        ``NotImplementedError``.
         """
         raise NotImplementedError("this recorder cannot be armed without its hotkey")
 

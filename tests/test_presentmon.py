@@ -249,6 +249,173 @@ def test_argument_style_fallback_lists_every_attempt(tmp_path):
     assert "--process_name" in (excinfo.value.hint or "")
 
 
+def test_process_id_is_used_instead_of_the_process_name(tmp_path):
+    fake = tmp_path / "PresentMon.exe"
+    fake.write_text("")
+    attempts = []
+
+    def popen(args, **kwargs):
+        attempts.append(args)
+        raise OSError("cannot execute")
+
+    backend = PresentMonFps(popen=popen, startup_timeout_s=0.2)
+    with pytest.raises(BackendUnavailable):
+        backend.start(FpsConfig(mode="presentmon", process_id=4242), presentmon_path=str(fake))
+    assert attempts[0][1:3] == ["--process_id", "4242"]
+    assert attempts[1][1:3] == ["-process_id", "4242"]
+    assert all("-process_name" not in arg for argv in attempts for arg in argv)
+
+
+def test_a_pid_wins_over_a_process_name(tmp_path):
+    """Both filters would be ANDed by PresentMon, so the pid has to win."""
+    fake = tmp_path / "PresentMon.exe"
+    fake.write_text("")
+    attempts = []
+
+    def popen(args, **kwargs):
+        attempts.append(args)
+        raise OSError("cannot execute")
+
+    backend = PresentMonFps(popen=popen, startup_timeout_s=0.2)
+    with pytest.raises(BackendUnavailable):
+        backend.start(
+            FpsConfig(mode="presentmon", process_name="game.exe", process_id=4242),
+            presentmon_path=str(fake),
+        )
+    assert attempts[0][1:3] == ["--process_id", "4242"]
+
+
+def test_a_pid_alone_satisfies_the_target_requirement(tmp_path):
+    """No process name at all is fine as long as a pid is given."""
+    fake = tmp_path / "PresentMon.exe"
+    fake.write_text("")
+    backend = PresentMonFps(popen=lambda args, **kw: (_ for _ in ()).throw(OSError("nope")))
+    with pytest.raises(BackendUnavailable) as excinfo:
+        backend.start(FpsConfig(mode="presentmon", process_id=4242), presentmon_path=str(fake))
+    assert "did not start" in str(excinfo.value)
+
+
+def test_process_id_must_be_a_positive_integer():
+    from fpsbench.core.route import RouteError
+
+    for bad in (0, -1):
+        with pytest.raises(RouteError):
+            FpsConfig(mode="presentmon", process_id=bad)
+    with pytest.raises(RouteError):
+        FpsConfig.from_dict({"process_id": "4242"}, "fps")
+    assert FpsConfig.from_dict({"process_id": 4242}, "fps").process_id == 4242
+
+
+def test_lost_events_are_explained_in_the_notes(tmp_path):
+    """An empty CSV because ETW dropped events must not read as "wrong process"."""
+    fake = tmp_path / "PresentMon.exe"
+    fake.write_text("")
+
+    class SilentProcess:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    backend = PresentMonFps(
+        popen=lambda args, **kw: SilentProcess(), startup_timeout_s=0.1
+    )
+    backend.start(FpsConfig(mode="presentmon", process_id=1), presentmon_path=str(fake))
+    with open(backend._log_path, "w", encoding="utf-8") as handle:
+        handle.write("warning: 1234 ETW events were lost.\nStarted recording.\n")
+    notes = " | ".join(backend.notes())
+    assert "events were lost" in notes
+    assert "ETW buffers overflowed" in notes
+
+
+def test_a_live_presentmon_with_no_rows_is_started_not_failed(tmp_path):
+    """PresentMon 2.x keeps the CSV empty until it has frames: that is not an error."""
+    fake = tmp_path / "PresentMon.exe"
+    fake.write_text("")
+
+    class SilentProcess:
+        returncode = None
+
+        def poll(self):
+            return None
+
+        def terminate(self):
+            pass
+
+        def kill(self):
+            pass
+
+        def wait(self, timeout=None):
+            return 0
+
+    backend = PresentMonFps(
+        popen=lambda args, **kw: SilentProcess(), startup_timeout_s=0.1
+    )
+    backend.start(FpsConfig(mode="presentmon", process_name="game.exe"), presentmon_path=str(fake))
+    notes = " | ".join(backend.notes())
+    assert "had written no frames" in notes
+    assert "no frames for process 'game.exe'" in notes
+
+
+def test_frames_are_read_after_a_graceful_stop(tmp_path):
+    """PresentMon 2.x locks its CSV; the frames appear when it flushes on stop."""
+    fake = tmp_path / "PresentMon.exe"
+    fake.write_text("")
+    rows = [
+        "game.exe,1,0x1,DXGI,1,0,16.0,16.0,0.1",
+        "game.exe,1,0x1,DXGI,1,0,17.0,17.0,0.1",
+    ]
+
+    class LockedProcess:
+        """Writes the CSV only when it is asked to stop, like PresentMon does."""
+
+        returncode = None
+        signalled = False
+
+        def __init__(self, csv_path):
+            self.csv_path = csv_path
+
+        def poll(self):
+            return self.returncode
+
+        def send_signal(self, sig):
+            self.signalled = True
+            with open(self.csv_path, "w", encoding="utf-8") as handle:
+                handle.write(HEADER_1X + "\n".join(rows) + "\n")
+            self.returncode = 0
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def terminate(self):
+            self.returncode = 1
+
+        def kill(self):
+            self.returncode = -9
+
+    def popen(args, **kwargs):
+        csv_path = args[args.index("--output_file") + 1]
+        process = LockedProcess(csv_path)
+        popen.process = process
+        return process
+
+    backend = PresentMonFps(popen=popen, startup_timeout_s=0.1, poll_interval_s=0.01)
+    backend.start(FpsConfig(mode="presentmon", process_name="game.exe"), presentmon_path=str(fake))
+    backend.stop()
+    assert popen.process.signalled is True
+    samples = list(backend.samples())
+    assert [sample.dt_ns for sample in samples] == [16000000, 17000000]
+
+
 def test_dispatching_backend_falls_back_to_ocr_and_says_so():
     from fpsbench.backends._dispatch import DispatchingFpsBackend
 

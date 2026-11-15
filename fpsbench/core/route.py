@@ -78,6 +78,7 @@ _FPS_FIELDS = (
     "max_fps",
     "presentmon_path",
     "process_name",
+    "process_id",
 )
 
 
@@ -130,6 +131,16 @@ def _str_or_none(value: Any, where: str, what: str) -> Optional[str]:
         return None
     if not isinstance(value, str):
         raise RouteError("%s: %s must be a string or null" % (where, what))
+    return value
+
+
+def _pid_or_none(value: Any, where: str, what: str) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise RouteError("%s: %s must be an integer or null" % (where, what))
+    if value <= 0:
+        raise RouteError("%s: %s must be > 0" % (where, what))
     return value
 
 
@@ -198,6 +209,11 @@ class FpsConfig:
     max_fps: float = 2000.0
     presentmon_path: Optional[str] = None
     process_name: Optional[str] = None
+    #: PresentMon only: filter by process id instead of executable name.  Useful
+    #: when the name is ambiguous (several processes with the same executable) or
+    #: was not matched, and it survives a name that contains spaces.  A pid is
+    #: only valid for the running instance, so it is never stored in a trace.
+    process_id: Optional[int] = None
 
     def __post_init__(self) -> None:
         if self.mode not in FPS_MODES:
@@ -206,6 +222,8 @@ class FpsConfig:
             raise RouteError("fps: sample_hz must be > 0")
         if self.min_fps < 0 or self.max_fps <= self.min_fps:
             raise RouteError("fps: require 0 <= min_fps < max_fps")
+        if self.process_id is not None and self.process_id <= 0:
+            raise RouteError("fps: process_id must be > 0")
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -216,6 +234,7 @@ class FpsConfig:
             "max_fps": self.max_fps,
             "presentmon_path": self.presentmon_path,
             "process_name": self.process_name,
+            "process_id": self.process_id,
         }
 
     @classmethod
@@ -235,6 +254,7 @@ class FpsConfig:
             max_fps=_num(data.get("max_fps", 2000.0), where, "fps max_fps", positive=True),
             presentmon_path=_str_or_none(data.get("presentmon_path"), where, "fps presentmon_path"),
             process_name=_str_or_none(data.get("process_name"), where, "fps process_name"),
+            process_id=_pid_or_none(data.get("process_id"), where, "fps process_id"),
         )
 
     def merged(self, **overrides: Any) -> "FpsConfig":

@@ -136,6 +136,7 @@ def resolve_fps_config(
         "region": region,
         "presentmon_path": getattr(args, "presentmon", None),
         "process_name": getattr(args, "process_name", None),
+        "process_id": getattr(args, "process_id", None),
     }
     config = FpsConfig.from_dict(base.to_dict(), "fps")
     for key, value in overrides.items():
@@ -1469,17 +1470,13 @@ def cmd_pick_region(args) -> int:
 # --------------------------------------------------------------------------- #
 # measure
 # --------------------------------------------------------------------------- #
-#: Recorded event kinds that count as the player actually doing something.
-_INPUT_KINDS = ("key", "look", "scroll", "button", "gamepad")
-
-
 class _InputWatch:
     """Listen-only keyboard/mouse recorder kept open for the whole measurement.
 
-    ``record``/``bench`` wait for the start hotkey and close the listener right
-    after it.  ``measure`` instead starts on the first piece of input, so the tap
-    has to be *armed* up front (:meth:`RecorderBackend.arm`) and stays open until
-    the stop hotkey arrives.
+    It is deliberately *not* armed: the start gesture is the same
+    ``ctrl+alt+enter`` the other commands use, so the first press opens the
+    measurement window and the second one closes it.  The tap is listen-only, so
+    the game still sees every key and every mouse movement.
     """
 
     def __init__(self) -> None:
@@ -1490,23 +1487,16 @@ class _InputWatch:
         try:
             recorder = backends_base.load_backend("record")
         except backends_base.BackendUnavailable as exc:
-            _error("cannot watch for input: %s" % exc, hint=exc.hint)
+            _error("cannot watch for the start hotkey: %s" % exc, hint=exc.hint)
             return False
         self.hotkey = recorder.finish_hotkey or self.hotkey
         try:
             recorder.prepare()
             recorder.start()
-            recorder.arm()
-        except NotImplementedError:
-            _error(
-                "this platform's recorder cannot be armed without its hotkey",
-                hint="use `record`/`bench` (explicit start gesture) instead",
-            )
-            _stop_quietly(recorder)
-            return False
         except Exception as exc:
             _error(
-                "could not watch for input: %s: %s" % (type(exc).__name__, exc),
+                "could not watch for the start hotkey: %s: %s"
+                % (type(exc).__name__, exc),
                 hint=getattr(exc, "hint", None),
             )
             _stop_quietly(recorder)
@@ -1520,37 +1510,24 @@ class _InputWatch:
             self.recorder = None
 
 
-def _open_gamepad_watch(args):
-    """Open the controller reader, or return ``None`` when it is not available."""
-    if getattr(args, "no_gamepad", False):
-        return None
-    try:
-        recorder = backends_base.load_backend("gamepad_record")
-        recorder.prepare()
-        return recorder
-    except backends_base.BackendUnavailable as exc:
-        _log("note: controller input is not monitored (%s)" % exc)
-    except Exception as exc:
-        _log("note: controller input is not monitored (%s: %s)" % (type(exc).__name__, exc))
-    return None
-
-
-def _is_input_event(event: Any) -> bool:
-    """Real gameplay input; a label marker is our own hotkey, not input."""
-    return getattr(event, "kind", None) in _INPUT_KINDS
-
-
 def cmd_measure(args) -> int:
-    """Measure FPS from the first input until ``ctrl+alt+enter``, without replay.
+    """Measure FPS from the start hotkey until the stop hotkey, without replay.
 
     The command settles first (``--settle-seconds``), then opens the measurement
-    window on the first keyboard, mouse or controller input and closes it on the
-    stop hotkey.  It injects nothing and changes no game state; the headline
-    numbers are the average and the 1% low FPS over exactly that window.
+    window on ``ctrl+alt+enter`` and closes it on the next press (or on
+    ``--countdown S`` seconds after it opened, which is what a scripted run
+    wants).  It injects nothing and changes no game state; the headline numbers
+    are the average and the 1% low FPS over exactly that window.
     """
     fps_config = resolve_fps_config(args)
     if fps_config.mode == "ocr" and fps_config.region is None:
         _error("measure with --fps ocr needs a region", hint="run `fpsbench pick-region` first")
+        return EXIT_FAILURE
+    if args.countdown is not None and args.countdown <= 0:
+        _error(
+            "--countdown needs a positive number of seconds",
+            hint="leave the flag out to stop with the hotkey instead",
+        )
         return EXIT_FAILURE
 
     for output in (args.json, args.csv):
@@ -1587,10 +1564,11 @@ def cmd_measure(args) -> int:
         return EXIT_FAILURE
     recorder = watch.recorder
     assert recorder is not None
-    gamepad = _open_gamepad_watch(args)
 
     deadline = time.monotonic() + args.timeout if args.timeout else None
     settle_s = max(0.0, float(getattr(args, "settle_seconds", 0.0) or 0.0))
+    countdown_s = float(args.countdown or 0.0)
+    countdown_deadline: Optional[float] = None
     start_ns = end_ns = 0
     stop_note = ""
     interrupted = False
@@ -1599,56 +1577,50 @@ def cmd_measure(args) -> int:
             _log("settling for %g s - get the game to the scene you want to measure" % settle_s)
             settle_deadline = time.monotonic() + settle_s
             while time.monotonic() < settle_deadline:
-                if recorder.stop_requested():
-                    _error("stopped before any input was seen")
-                    return EXIT_FAILURE
                 if deadline is not None and time.monotonic() >= deadline:
                     _error("--timeout %g s ran out during the settle period" % args.timeout)
                     return EXIT_FAILURE
                 recorder.poll()  # whatever happens while settling does not count
                 time.sleep(0.05)
 
-        pad_snapshot = True
-        if gamepad is not None:
-            try:
-                gamepad.start()
-            except Exception as exc:
-                _log("note: controller input is not monitored (%s: %s)" % (type(exc).__name__, exc))
-                gamepad = None
-
-        _log("ready: measuring starts on the first input (keyboard, mouse or controller)")
-        while start_ns == 0:
-            if recorder.stop_requested():
-                _error("the measurement was stopped before any input was seen")
-                return EXIT_FAILURE
+        # The measurement starts on the same gesture the other commands use, so the
+        # run begins exactly when the player asks for it - not on whatever input
+        # happens to come first.  ``recording()`` turns True on that key press (a
+        # recorder without a hotkey reports True immediately).
+        _log(
+            "ready: press %s (with the game focused) to start measuring" % watch.hotkey
+        )
+        while not recorder.recording():
             if deadline is not None and time.monotonic() >= deadline:
                 _error(
-                    "no input was seen before the timeout (%g s)" % args.timeout,
-                    hint="wait for the settle period to end, then touch the controls",
+                    "the measurement was not started before the timeout (%g s)"
+                    % args.timeout,
+                    hint="press %s once the settle period has passed" % watch.hotkey,
                 )
                 return EXIT_FAILURE
-            if any(_is_input_event(event) for event in recorder.poll()):
-                start_ns = _playback_clock()
-                break
-            if gamepad is not None:
-                events = gamepad.poll()
-                if pad_snapshot:
-                    # The first poll repeats the state the controller is already in.
-                    events = events[1:]
-                    pad_snapshot = False
-                if events:
-                    start_ns = _playback_clock()
-                    break
+            recorder.poll()  # a label or stray input is not a start gesture
             time.sleep(0.01)
+        start_ns = _playback_clock()
+        _log("  measuring started")
 
-        _log("measuring - press %s to stop (Ctrl-C also stops)" % watch.hotkey)
+        if countdown_s > 0:
+            # The countdown starts with the measured window, i.e. on the start
+            # hotkey, so the report always covers exactly ``countdown_s``.
+            countdown_deadline = time.monotonic() + countdown_s
+            _log(
+                "measuring for %g s - the window closes by itself (Ctrl-C also stops)"
+                % countdown_s
+            )
+        else:
+            _log("measuring - press %s again to stop (Ctrl-C also stops)" % watch.hotkey)
         while not recorder.stop_requested():
+            if countdown_deadline is not None and time.monotonic() >= countdown_deadline:
+                stop_note = "stopped after the %g s countdown" % countdown_s
+                break
             if deadline is not None and time.monotonic() >= deadline:
                 stop_note = "stopped at the timeout (%g s)" % args.timeout
                 break
             recorder.poll()  # drain: a long measurement must not grow the buffer
-            if gamepad is not None:
-                gamepad.poll()
             time.sleep(0.01)
         end_ns = _playback_clock()
     except KeyboardInterrupt:
@@ -1656,11 +1628,6 @@ def cmd_measure(args) -> int:
         end_ns = _playback_clock()
     finally:
         watch.close()
-        if gamepad is not None:
-            try:
-                gamepad.stop()
-            finally:
-                gamepad = None
         try:
             fps_backend.stop()
         finally:
@@ -1671,7 +1638,7 @@ def cmd_measure(args) -> int:
     if end_ns <= start_ns:
         _error(
             "nothing was measured",
-            hint="the window opens on the first input; %s stops it" % watch.hotkey,
+            hint="%s starts the window and stops it again" % watch.hotkey,
         )
         return EXIT_FAILURE if not interrupted else EXIT_INTERRUPTED
 
@@ -1734,6 +1701,8 @@ def cmd_measure(args) -> int:
                 fps_config=fps_config.to_dict(),
             ),
         }
+        if countdown_s > 0:
+            payload["countdown_s"] = countdown_s
         with open(args.json, "w", encoding="utf-8") as handle:
             handle.write(json.dumps(payload, indent=2, sort_keys=False))
             handle.write("\n")
@@ -1879,6 +1848,14 @@ def build_parser() -> argparse.ArgumentParser:
             "name is resolved to the running process"
         ),
     )
+    record.add_argument(
+        "--process-id",
+        type=int,
+        help=(
+            "PresentMon only: filter by process id instead of the executable name "
+            "(the pid changes every launch, so pass it per run)"
+        ),
+    )
     record.set_defaults(func=cmd_record)
 
     bench = subparsers.add_parser("bench", help="replay a route/trace and report FPS")
@@ -1938,6 +1915,14 @@ def build_parser() -> argparse.ArgumentParser:
             "name is resolved to the running process"
         ),
     )
+    bench.add_argument(
+        "--process-id",
+        type=int,
+        help=(
+            "PresentMon only: filter by process id instead of the executable name "
+            "(the pid changes every launch, so pass it per run)"
+        ),
+    )
     bench.add_argument("--region", help="FPS region as x,y,w,h")
     bench.add_argument("--window", help="game window title substring to activate first")
     bench.add_argument(
@@ -1987,7 +1972,7 @@ def build_parser() -> argparse.ArgumentParser:
         "measure",
         aliases=["fps"],
         help=(
-            "measure FPS from the first input until the stop hotkey "
+            "measure FPS from the start hotkey until the next press "
             "(no route, no input injection)"
         ),
     )
@@ -2002,20 +1987,40 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     measure.add_argument(
+        "--process-id",
+        type=int,
+        help=(
+            "PresentMon only: filter by process id instead of the executable name "
+            "(the pid changes every launch, so pass it per run)"
+        ),
+    )
+    measure.add_argument(
         "--settle-seconds",
         type=float,
         default=3.0,
-        help="wait this long before watching for the first input (default 3)",
+        help="wait this long before watching for the start hotkey (default 3)",
     )
     measure.add_argument(
         "--no-gamepad",
         action="store_true",
-        help="do not monitor controller input (keyboard and mouse still start the window)",
+        help=(
+            "deprecated and ignored: the window starts on ctrl+alt+enter, so no "
+            "controller is read (kept so existing scripts keep working)"
+        ),
     )
     measure.add_argument(
         "--timeout",
         type=float,
-        help="abort after N seconds (settle and waiting for the first input included)",
+        help="abort after N seconds (settle and waiting for the start hotkey included)",
+    )
+    measure.add_argument(
+        "--countdown",
+        type=float,
+        metavar="S",
+        help=(
+            "stop and report S seconds after the measurement starts (i.e. after the "
+            "start hotkey), instead of waiting for the stop hotkey"
+        ),
     )
     measure.add_argument("--json", help="write the measurement as JSON")
     measure.add_argument("--csv", help="write the per-sample time series as CSV")
@@ -2031,6 +2036,14 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "game process name (PresentMon / metalperftrace); on macOS an app or window "
             "name is resolved to the running process"
+        ),
+    )
+    dry.add_argument(
+        "--process-id",
+        type=int,
+        help=(
+            "PresentMon only: filter by process id instead of the executable name "
+            "(the pid changes every launch, so pass it per run)"
         ),
     )
     dry.add_argument("--window", help="game window title substring")
